@@ -1,0 +1,180 @@
+###  Line 30 is the loop where you can select which lake parameter to analyze
+###  Line 72 is the lake input, can handle a vector (but is still buggy)
+
+
+#####################  BATCH SEMIVARIANCE  ##########################
+library(rgdal)
+library(gstat)
+library(maptools)
+library(rgdal)
+library(sp)
+library(gstat)
+library(raster)
+library(geoR)
+library(automap)
+library(ggplot2)
+library(caTools)
+library(kriging)
+library(RgoogleMaps)
+require(stringr)
+
+rm(list= ls())
+
+setwd("E:/Dropbox/FLAME/Data")
+################################################  State Semivariance function
+
+Semivariance=function(shape){
+  
+  shape_UTM<-spTransform(shape, CRS("+proj=utm +zone=16 ellps=WGS84"))
+  
+  i=9
+  #cutoff= #need to set to be 1/3 to 1/2 the spatial width
+  #width= #need to set to be 1/3 to 1/2 the spatial width
+  #for (i in 1:length(shape_UTM@data)){
+  
+  name<-names(shape_UTM@data)[i]
+  b<-shape[is.na(shape_UTM@data[,i])==FALSE,]
+  #Variogram model 1 - Autofit
+  variogram1 = autofitVariogram(b@data[,i]~1, b, model="Sph")
+  #plot(variogram1)
+  #  summary(variogram1)
+  
+  #Variogram model 2 - set lags
+  #  variogram2<-variogram(b@data[,i]~1,b, width=10, cutoff=3000)
+  #  summary(variogram2)
+  #  plot(variogram2)
+  #  model<-fit.variogram(variogram2, vgm(1, "Sph", 1000, 1), fit.sills=TRUE, fit.ranges=TRUE )
+  #  summary(model)
+  #  plot(variogram2, model=model, col="black", xlab="lag distance (m)", cex=0.6)
+  #print(variogram1$var_model)    
+  # }
+  
+  ## Populate vector
+  nugget      <- as.character(variogram1$var_model[1,1])
+  nuggetpsill <- variogram1$var_model[1,2]
+  nuggetrange <- variogram1$var_model[1,3]
+  model       <- as.character(variogram1$var_model[2,1])
+  psill       <- variogram1$var_model[2,2]
+  range       <- variogram1$var_model[2,3]
+  parameter   <- name
+  #lakename    <-
+  #date        <-
+    
+#modelparams <- c(lakename, date,  parameter, nugget, nuggetpsill, nuggetrange, model, psill, range)
+  
+  modelparams <- c(parameter, nugget, nuggetpsill, nuggetrange, model, psill, range)
+  return(modelparams)
+  row.names()
+}
+
+################### Create List of lakes you want to run Semivariance on
+
+names <- c("Mendota")
+
+
+#### Change nothing below
+
+pull.names <- vector()
+shapefdir <- vector()
+all.dates <- vector()
+
+
+for(file in 1:length(names)){
+  
+  selection <- names[file]
+  
+#setwd("E:/Dropbox/FLAME/Data")
+
+####
+
+listedfiles = list.files(path = paste(getwd()))
+split <- str_subset(listedfiles, selection)
+splitlistedfiles <- list.files(path = paste(split, "/shapefiles", sep=""))
+splitresults <- unlist(strsplit(splitlistedfiles, split='[.]'))
+
+#name <-splitresults[file]  ### [1] -> [file]
+
+temp.dates <- unique(splitresults[grep(names[file], splitresults)])    ############################## [1] -> [file]
+
+all.dates <- c(all.dates, temp.dates)
+
+temp.dir <- paste(split, "/shapefiles", sep="")
+
+shapefdir <- c(shapefdir, temp.dir)
+
+pull.names <- c(pull.names, all.dates)
+
+}
+
+
+
+
+
+output <- vector()
+n <- 9
+
+for(j in 1:length(pull.names)){
+
+  #j = 9
+  
+#shapefdir <- paste(pull.names[j], "/shapefiles", sep = "")
+
+shapefile <- readOGR(paste(getwd(), shapefdir[j], sep="/"), all.dates[j])
+
+#This is the original code for running sequential file names and shape file folders. It was changed in order to split the shape file generation out of the large loop
+#shapefile <- readOGR(paste(getwd(), shapefdir, sep="/"), name)
+
+########################################  CALL SEMIVARIANCE
+shapef <- shapefile  # VLB edit
+str(shapef)
+shapef = spTransform(shapef, CRS("+init=epsg:32616"))
+str(shapef)
+shape = shapef
+############################################################
+#the "roll-your-own" boundaries for interpolation
+crds = coordinates(shapef)
+poly = crds[chull(crds), ]
+poly = rbind(poly, poly[1, ])
+SPpoly = SpatialPolygons(list(Polygons(list(Polygon(poly)), ID = "poly")))
+bbox(shapef)# extract coords.x1 and coords.x2 min as the first arguments to GridTopology
+(apply(bbox(shapef), 1, diff)%/%50) + 1#these values become the last argument to GridTopology  ##VLB WHY?
+
+grd <- GridTopology(c(bbox(shapef)[1,1], bbox(shapef)[2,1]), c((bbox(shapef)[1,2]-bbox(shapef)[1,1])/11, ((bbox(shapef)[2,2]-bbox(shapef)[2,1])/11)), c(100,100))#JTC# this needs to be automated, need to work with UTM's #VLB# autoselects min latlong to place first box, autoselects cell size so that there are ten cells in a row and col (good for questions about scale, poor for patches across differently sized systems (should be fixed cell size))
+#grd <- GridTopology(c(bbox(shapef)[1,1], bbox(shapef)[2,1]), c(10, 10), c(100,100))   # this needs to be automated, need to work with UTM's (changed VLB)
+
+SG <- SpatialGrid(grd)
+inside <- over(SG, SPpoly)
+SGDF <- SpatialGridDataFrame(grd, data = data.frame(list(ins = inside)), CRS("+init=epsg:32616"))
+SPDF <- as(SGDF, "SpatialPixelsDataFrame")
+###################################################################################
+#plot the original shapefile, add the convex hull polygon, add the grid for interpolation
+plot(shapef, axes = TRUE)
+plot(SPpoly, add = TRUE)
+plot(SPDF, col = "red", add = TRUE)
+####################################################################################
+#Setting up class intervals and palettes initially will save time later;
+#note the use of colorRampPalette, which can also be specified
+#from RColorBrewer palettes
+bluepal <- colorRampPalette(c("azure1", "steelblue4"))
+brks <- c(0, 130, 155, 195, 250, 330, 450, 630, 890, 1270, 1850)
+cols <- bluepal(length(brks) - 1)
+sepal <- colorRampPalette(c("peachpuff1", "tomato3"))
+brks.se <- c(0, 240, 250, 260, 270, 280, 290, 300, 350, 400, 1000)
+cols.se <- sepal(length(brks.se) - 1)
+scols <- c("green", "red")
+
+assign(paste("shape", names[file], sep = "."), shape)
+
+current.name <- paste("shape", names[file], sep = ".")
+
+####################################
+
+semivarout<- Semivariance(get(current.name))
+
+output <- rbind(output, semivarout)
+rownames(output)[j] <- all.dates[j]
+colnames(output) <- c("LakeParam", "Modelparam", "NugPSill", "NugRange", "Model", "ModelPSill", "Range")
+
+}
+
+output
